@@ -8,7 +8,7 @@ from aiohttp import web
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-# --- Configuration (Set in Render Dashboard) ---
+# --- Configuration ---
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
@@ -23,7 +23,6 @@ GAME_BOT_USERNAME = "HeXamonbot"
 TARGETS_FILE = "catch_list.json"
 STATS_FILE = "stats.json"
 
-# --- Data Management ---
 def load_json(file, default):
     if os.path.exists(file):
         try:
@@ -44,12 +43,8 @@ stats = load_json(STATS_FILE, {
     "caught": 0, "encountered": 0, "shinies": 0, "last_catches": []
 })
 
-# Reset stats if a new day has started
 if stats.get("date") != datetime.now().strftime("%Y-%m-%d"):
-    stats = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "caught": 0, "encountered": 0, "shinies": 0, "last_catches": []
-    }
+    stats = {"date": datetime.now().strftime("%Y-%m-%d"), "caught": 0, "encountered": 0, "shinies": 0, "last_catches": []}
     save_json(STATS_FILE, stats)
 
 # --- Global States ---
@@ -63,23 +58,19 @@ async def auto_hunt_timer():
     global hunt_timer
     await asyncio.sleep(12)
     if is_active:
-        print("No pokemon appeared within 12s. Retrying /hunt...")
         await client.send_message(GAME_BOT_ID, '/hunt')
         reset_hunt_timer()
 
 def reset_hunt_timer():
     global hunt_timer
-    if hunt_timer:
-        hunt_timer.cancel()
-    if is_active:
-        hunt_timer = asyncio.create_task(auto_hunt_timer())
+    if hunt_timer: hunt_timer.cancel()
+    if is_active: hunt_timer = asyncio.create_task(auto_hunt_timer())
 
 def calculate_health_percentage(max_hp, current_hp):
     if max_hp <= 0: return 0
     return round((current_hp / max_hp) * 100)
 
 # --- Commands ---
-
 @client.on(events.NewMessage(pattern=r'/ball_(.*)', from_users=OWNER_ID))
 async def set_ball(event):
     global active_ball
@@ -89,14 +80,10 @@ async def set_ball(event):
 
 @client.on(events.NewMessage(pattern='/stats', from_users=OWNER_ID))
 async def show_stats(event):
-    header = (f"📊 **Daily Stats ({stats['date']})**\n"
-              f"Encounters: {stats['encountered']} | Caught: {stats['caught']} | Shinies: {stats['shinies']}\n"
-              f"------------------------------------\n")
-    
+    header = f"📊 **Daily Stats ({stats['date']})**\nEncounters: {stats['encountered']} | Caught: {stats['caught']} | Shinies: {stats['shinies']}\n---\n"
     if not stats["last_catches"]:
-        await event.reply(header + "No catches yet today.")
+        await event.reply(header + "No catches yet.")
         return
-
     output = header
     for entry in stats["last_catches"]:
         if len(output) + len(entry) > 3900:
@@ -114,12 +101,10 @@ async def add_to_list(event):
     await event.reply(f"✅ **Added!** Targets: {len(custom_catch_list)}")
 
 # --- Automation Logic ---
-
 @client.on(events.NewMessage(from_users=GAME_BOT_ID))
 async def game_handler(event):
     global hunt_timer, is_active, stats, low_lvl
     if not is_active: return
-    
     raw = event.raw_text.lower()
 
     if "daily hunt limit reached" in raw:
@@ -128,28 +113,25 @@ async def game_handler(event):
         await event.reply("🛑 **Daily limit reached!**")
         return
 
-    # 1. Shiny Detection & Automated Battle Entry
+    # Shiny Detection
     elif "✨" in event.raw_text or "shiny" in raw:  
         stats["shinies"] += 1
         save_json(STATS_FILE, stats)
         await asyncio.sleep(1)
-        try:
-            await event.click(0, 0) # Click Battle
+        try: await event.click(0, 0) 
         except: pass
-        await event.client.send_message(-4254868305, f"@Newbiw_ot ✨ **SHINY ENCOUNTERED!** ✨\nCatching with: `{active_ball}`") 
+        await event.client.send_message(-4254868305, f"@Newbiw_ot ✨ **SHINY!** ✨\nCatching with: `{active_ball}`") 
         return
 
-    # 2. Hunt or Pass
     elif "a wild" in raw:
         stats["encountered"] += 1
         save_json(STATS_FILE, stats)
         reset_hunt_timer() 
         pok_name = event.raw_text.split("wild ")[1].split(" (")[0]
-        
         delay = random.uniform(1.2, 2.5)
         if pok_name in custom_catch_list:
             await asyncio.sleep(delay)
-            await event.click(0, 0) # Start Battle
+            await event.click(0, 0)
         else:
             await asyncio.sleep(delay)
             await client.send_message(GAME_BOT_ID, '/hunt')
@@ -172,25 +154,18 @@ async def battle_manager(event):
     global stats, is_active, low_lvl, active_ball
     if not is_active: return
 
-    # 3. Catch Extraction (Nature, IV, ID)
     if "You caught" in event.raw_text:
         stats["caught"] += 1
-        
         name_m = re.search(r"You caught ([\w\s]+)!", event.raw_text)
         id_m = re.search(r"ID: #?(\d+)", event.raw_text)
         nat_m = re.search(r"Nature: (\w+)", event.raw_text)
         iv_m = re.search(r"IV: (\d+\.?\d*%)", event.raw_text)
-
-        p_name = name_m.group(1) if name_m else "Unknown"
-        p_id = id_m.group(1) if id_m else "0"
-        p_nat = (nat_m.group(1)[:3]) if nat_m else "?"
-        p_iv = iv_m.group(1) if iv_m else "?"
-
+        p_name, p_id = (name_m.group(1) if name_m else "Unknown"), (id_m.group(1) if id_m else "0")
+        p_nat, p_iv = (nat_m.group(1)[:3] if nat_m else "?"), (iv_m.group(1) if iv_m else "?")
         entry = f"`#{p_id}` **{p_name}** ({p_nat}|{p_iv})"
         stats["last_catches"].append(entry)
         if len(stats["last_catches"]) > 300: stats["last_catches"].pop(0)
         save_json(STATS_FILE, stats)
-
         low_lvl = False
         await asyncio.sleep(2)
         await client.send_message(GAME_BOT_ID, '/hunt')
@@ -213,8 +188,7 @@ async def battle_manager(event):
                 await event.click(text="Poke Balls")
                 await asyncio.sleep(1)
                 try:
-                    if active_ball != "Poke Balls":
-                        await event.click(text=active_ball)
+                    if active_ball != "Poke Balls": await event.click(text=active_ball)
                     else: await event.click(0, 0)
                 except: await event.click(0, 0) 
                 await asyncio.sleep(1)
@@ -223,8 +197,8 @@ async def battle_manager(event):
                 await asyncio.sleep(1.2)
                 await event.click(0, 0)
 
-# --- Render Web Server ---
-async def handle(request): return web.Response(text="Bot Active")
+# --- Web Server ---
+async def handle(request): return web.Response(text="Bot Online")
 
 async def main():
     app = web.Application()
@@ -234,7 +208,13 @@ async def main():
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000))).start()
     await client.connect()
     if not await client.is_user_authorized(): return 
-    await client.get_input_entity(GAME_BOT_ID)
+
+    # FIXED: Find bot by username to resolve Entity Error
+    try:
+        await client.get_input_entity(GAME_BOT_ID)
+    except:
+        await client.get_input_entity(GAME_BOT_USERNAME)
+
     await client.send_message(GAME_BOT_ID, '/hunt')
     reset_hunt_timer()
     await client.run_until_disconnected()
