@@ -43,12 +43,12 @@ stats = load_json(STATS_FILE, {
     "caught": 0, "encountered": 0, "shinies": 0, "last_catches": []
 })
 
+# Daily Reset Check
 if stats.get("date") != datetime.now().strftime("%Y-%m-%d"):
     stats = {"date": datetime.now().strftime("%Y-%m-%d"), "caught": 0, "encountered": 0, "shinies": 0, "last_catches": []}
     save_json(STATS_FILE, stats)
 
 # --- Global States ---
-cooldown = random.randint(1, 2)
 low_lvl = False
 hunt_timer = None 
 active_ball = "Poke Balls" 
@@ -71,6 +71,27 @@ def calculate_health_percentage(max_hp, current_hp):
     return round((current_hp / max_hp) * 100)
 
 # --- Commands ---
+
+@client.on(events.NewMessage(pattern='/ping', from_users=OWNER_ID))
+async def ping(event):
+    status = "Running ✅" if is_active else "Stopped ❌"
+    await event.reply(f"**🏓 Pong!**\n**Status:** {status}\n**Caught Today:** {stats['caught']}")
+
+@client.on(events.NewMessage(pattern='/start_bot', from_users=OWNER_ID))
+async def start_bot(event):
+    global is_active
+    is_active = True
+    await event.reply("🚀 **Bot Started!** Sending /hunt...")
+    await client.send_message(GAME_BOT_ID, '/hunt')
+    reset_hunt_timer()
+
+@client.on(events.NewMessage(pattern='/stop_bot', from_users=OWNER_ID))
+async def stop_bot(event):
+    global is_active
+    is_active = False
+    if hunt_timer: hunt_timer.cancel()
+    await event.reply("🛑 **Bot Stopped.** Automation paused.")
+
 @client.on(events.NewMessage(pattern=r'/ball_(.*)', from_users=OWNER_ID))
 async def set_ball(event):
     global active_ball
@@ -100,27 +121,46 @@ async def add_to_list(event):
     save_json(TARGETS_FILE, custom_catch_list) 
     await event.reply(f"✅ **Added!** Targets: {len(custom_catch_list)}")
 
+@client.on(events.NewMessage(pattern='/show', from_users=OWNER_ID))
+async def show_list(event):
+    if not custom_catch_list:
+        await event.reply("📍 **Current Targets:** None.")
+    else:
+        pokes = ", ".join(custom_catch_list)
+        await event.reply(f"📍 **Current Targets ({len(custom_catch_list)}):**\n`{pokes}`")
+
+@client.on(events.NewMessage(pattern='/clear', from_users=OWNER_ID))
+async def clear_list(event):
+    global custom_catch_list
+    custom_catch_list = []
+    save_json(TARGETS_FILE, [])
+    await event.reply("🗑️ **Target list cleared.** Bot will only catch Shinies now.")
+
 # --- Automation Logic ---
+
 @client.on(events.NewMessage(from_users=GAME_BOT_ID))
 async def game_handler(event):
     global hunt_timer, is_active, stats, low_lvl
-    if not is_active: return
     raw = event.raw_text.lower()
 
-    if "daily hunt limit reached" in raw:
+    # Auto-Stop on Limit
+    if any(x in raw for x in ["daily hunt limit reached", "limit reached"]):
         is_active = False
         if hunt_timer: hunt_timer.cancel()
-        await event.reply("🛑 **Daily limit reached!**")
+        await event.reply("🛑 **Auto-Stopped:** Daily hunt limit reached.")
         return
 
+    if not is_active: return
+
     # Shiny Detection
-    elif "✨" in event.raw_text or "shiny" in raw:  
+    if "✨" in event.raw_text or "shiny" in raw:  
         stats["shinies"] += 1
         save_json(STATS_FILE, stats)
         await asyncio.sleep(1)
         try: await event.click(0, 0) 
         except: pass
-        await event.client.send_message(-4254868305, f"@Newbiw_ot ✨ **SHINY!** ✨\nCatching with: `{active_ball}`") 
+        # Replace the ID below with your log group/channel ID
+        await event.client.send_message(-4254868305, f"✨ **SHINY FOUND!** ✨\nCatching with: `{active_ball}`") 
         return
 
     elif "a wild" in raw:
@@ -131,7 +171,7 @@ async def game_handler(event):
         delay = random.uniform(1.2, 2.5)
         if pok_name in custom_catch_list:
             await asyncio.sleep(delay)
-            await event.click(0, 0)
+            await event.click(0, 0) # Click Battle
         else:
             await asyncio.sleep(delay)
             await client.send_message(GAME_BOT_ID, '/hunt')
@@ -147,7 +187,7 @@ async def game_handler(event):
             else:
                 low_lvl = False
                 await asyncio.sleep(1.5)
-                await event.click(0, 0)
+                await event.click(0, 0) # Click Attack
 
 @client.on(events.MessageEdited(from_users=GAME_BOT_ID))
 async def battle_manager(event):
@@ -162,18 +202,18 @@ async def battle_manager(event):
         iv_m = re.search(r"IV: (\d+\.?\d*%)", event.raw_text)
         p_name, p_id = (name_m.group(1) if name_m else "Unknown"), (id_m.group(1) if id_m else "0")
         p_nat, p_iv = (nat_m.group(1)[:3] if nat_m else "?"), (iv_m.group(1) if iv_m else "?")
+        
         entry = f"`#{p_id}` **{p_name}** ({p_nat}|{p_iv})"
         stats["last_catches"].append(entry)
         if len(stats["last_catches"]) > 300: stats["last_catches"].pop(0)
         save_json(STATS_FILE, stats)
-        low_lvl = False
+        
         await asyncio.sleep(2)
         await client.send_message(GAME_BOT_ID, '/hunt')
         reset_hunt_timer()
         return
 
     if any(s in event.raw_text for s in ["fled", "💵"]):
-        low_lvl = False
         await asyncio.sleep(2)
         await client.send_message(GAME_BOT_ID, '/hunt')
         reset_hunt_timer()
@@ -197,7 +237,7 @@ async def battle_manager(event):
                 await asyncio.sleep(1.2)
                 await event.click(0, 0)
 
-# --- Web Server ---
+# --- Web Server (Render Keep-Alive) ---
 async def handle(request): return web.Response(text="Bot Online")
 
 async def main():
@@ -206,14 +246,12 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000))).start()
+    
     await client.connect()
     if not await client.is_user_authorized(): return 
 
-    # FIXED: Find bot by username to resolve Entity Error
-    try:
-        await client.get_input_entity(GAME_BOT_ID)
-    except:
-        await client.get_input_entity(GAME_BOT_USERNAME)
+    try: await client.get_input_entity(GAME_BOT_ID)
+    except: await client.get_input_entity(GAME_BOT_USERNAME)
 
     await client.send_message(GAME_BOT_ID, '/hunt')
     reset_hunt_timer()
